@@ -1,0 +1,35 @@
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v26.2.2
+    command:
+      - redpanda start
+      - --overprovisioned          # локальный режим: брокер не резервирует память под прод-нагрузку
+      - --smp 1                    # одно ядро — для разработки достаточно
+      - --kafka-addr PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://redpanda:9092
+    ports:
+      - "9092:9092"
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s            # брокеру нужно время стартовать — не считаем ранние проверки
+
+  redis:
+    image: redis:8.10.2-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  redpanda-data:
+  redis-data:

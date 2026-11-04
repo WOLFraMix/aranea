@@ -54,26 +54,48 @@ func (p *Pool) Run(ctx context.Context) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			p.workerLoop(ctx, id) // TODO (вам) — см. ниже
+			p.workerLoop(ctx, id)
 		}(i)
 	}
 
-	// TODO: правильная последовательность завершения.
-	// Пока ctx отменён:
-	//  1) дождаться, пока воркеры дойдут до конца (wg.Wait) — они перестанут
-	//     писать в p.results;
-	//  2) ЗАТЕМ закрыть p.results — это разблокирует range у сборщика;
-	//     закрыть results раньше = паника «send on closed channel»,
-	//     если воркер ещё жив;
-	//  3) дождаться сборщика (collectorDone).
+	// Завершение: Run блокируется до отмены ctx, затем гасит пул в строгом порядке.
+	<-ctx.Done()
+
+	// 1) Ждём, пока все воркеры выйдут: после этого никто не пишет в p.results.
+	wg.Wait()
+	// 2) Только теперь закрываем results — range у сборщика завершится.
+	//    Раньше было бы «send on closed channel», если воркер ещё жив.
+	close(p.results)
+	// 3) Ждём выхода сборщика.
+	<-collectorDone
 }
 
-// workerLoop — жизнь одного воркера.
-// TODO: бесконечный select:
-//   - case <-ctx.Done(): return  — краул остановлен;
-//   - case t := <-p.tasks:      — взяли задачу, дальше:
-//       1) p.limits.Wait(ctx, t.URL) — вежливость к домену (если ошибка — skip);
-//       2) p.probe.Fetch(ctx, t) — сама проба;
-//       3) положить результат в p.results.
-// Нюанс: третья запись может блокироваться, если сборщик не успевает —
-// оберните её в select с <-ctx.Done(), иначе воркер не выйдет при отмене.
+// workerLoop — жизнь одного воркера: берёт задачу, ждёт вежливости домена,
+// пробирает страницу и отдаёт результат сборщику. Выходит при отмене ctx.
+func (p *Pool) workerLoop(ctx context.Context, id int) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case t := <-p.tasks:
+			// Вежливость к домену. Ошибка здесь — битый URL или отмена ctx.
+			if err := p.limits.Wait(ctx, t.URL); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				log.Printf("worker %d: skip %s: %v", id, t.URL, err)
+				continue
+			}
+
+			res := p.probe.Fetch(ctx, t)
+
+			// Запись может блокироваться, если сборщик не успевает.
+			// Без select с ctx.Done воркер повис бы и не вышел при отмене.
+			select {
+			case p.results <- res:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+}

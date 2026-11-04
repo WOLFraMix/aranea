@@ -3,6 +3,9 @@ package fetcher
 
 import (
 	"context"
+	"fmt"
+	"net/url"
+	"strings"
 	"sync"
 
 	"golang.org/x/time/rate"
@@ -28,15 +31,34 @@ func NewDomainLimits(perSec int) *DomainLimits {
 // Wait блокирует горутину, пока домен не разрешит следующий запрос,
 // либо пока ctx не отменят. Возвращает nil, когда можно идти.
 func (d *DomainLimits) Wait(ctx context.Context, rawURL string) error {
-	// TODO три шага:
-	// 1) распарсить URL (net/url.Parse) и взять u.Hostname() — это ключ домена;
-	//    при ошибке парсинга вернуть ошибку — на такой URL идти нельзя;
-	// 2) под мьютексом: получить limiter из map; если его нет — создать
-	//    rate.NewLimiter(d.r, 1) и положить в map (burst=1: не копим «пакеты» запросов);
-	// 3) вернуть limiter.Wait(ctx).
-	//
-	// Подсказка по идиоме get-or-create: проверка и вставка в map должны
-	// происходить под ОДНИМ захватом мьютекса — иначе два воркера могут
-	// одновременно не найти limiter и создать по своему.
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("cant parse URL: %w", err)
+	}
+	// Имя хоста не зависит от регистра: Example.com и example.com — один домен.
+	// Без приведения к нижнему регистру им достались бы разные лимитеры,
+	// и суммарная нагрузка на сайт удвоилась бы.
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		// Без хоста ключ был бы "", и все такие URL делили бы один общий лимитер.
+		return fmt.Errorf("URL without host: %q", rawURL)
+	}
+
+	// get-or-create под ОДНИМ захватом мьютекса: проверка и вставка в map
+	// атомарны, поэтому два воркера не создадут по лимитеру на один домен.
+	d.mu.Lock()
+	limiter, ok := d.lims[host]
+	if !ok {
+		limiter = rate.NewLimiter(d.r, 1) // burst=1: не копим «пакеты» запросов
+		d.lims[host] = limiter
+	}
+	d.mu.Unlock()
+
+	// Ждём уже ВНЕ мьютекса: rate.Limiter безопасен для параллельного использования,
+	// а мьютекс, который держался бы во время ожидания, заставил бы все домены
+	// ждать друг друга.
+	if err := limiter.Wait(ctx); err != nil {
+		return fmt.Errorf("wait for %s: %w", host, err)
+	}
 	return nil
 }

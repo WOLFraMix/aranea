@@ -3,12 +3,13 @@ services:
     image: docker.redpanda.com/redpandadata/redpanda:v26.2.2
     command:
       - redpanda start
-      - --overprovisioned          # локальный режим: брокер не резервирует память под прод-нагрузку
-      - --smp 1                    # одно ядро — для разработки достаточно
-      - --kafka-addr PLAINTEXT://0.0.0.0:9092
-      - --advertise-kafka-addr PLAINTEXT://redpanda:9092
+      - --overprovisioned
+      - --smp 1
+      - --kafka-addr PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:9093
+      - --advertise-kafka-addr PLAINTEXT://redpanda:9092,OUTSIDE://localhost:9093
     ports:
       - "9092:9092"
+      - "9093:9093"
     volumes:
       - redpanda-data:/var/lib/redpanda/data
     healthcheck:

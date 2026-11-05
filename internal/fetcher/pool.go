@@ -38,12 +38,18 @@ func (p *Pool) Tasks() chan<- event.Task { return p.tasks }
 
 // Run запускает сборщик и воркеров; блокируется до отмены ctx.
 func (p *Pool) Run(ctx context.Context) {
+	// Контекст зачистки: наследует значения родителя, но НЕ отменяется вместе
+	// с ним. Зачем: когда ctx отменён (Ctrl+C), воркеры выходят, а сборщик
+	// ещё должен дописать хвост результатов из буфера канала. С обычным ctx
+	// каждый Publish падал бы с "context canceled" — и результаты терялись.
+	pctx := context.WithoutCancel(ctx)
+
 	// Сборщик: единственная горутина, которая трогает Kafka-продюсер
 	collectorDone := make(chan struct{})
 	go func() {
 		defer close(collectorDone)
 		for r := range p.results {
-			if err := p.producer.Publish(ctx, event.TopicPages, r); err != nil {
+			if err := p.producer.Publish(pctx, event.TopicPages, r); err != nil {
 				log.Printf("publish page: %v", err)
 			}
 		}

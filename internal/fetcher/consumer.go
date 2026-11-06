@@ -53,10 +53,11 @@ func (c *Consumer) ConsumeTasks(ctx context.Context, tasks chan<- event.Task) (c
 				return // клиент закрыли (defer Close в main) — выходим
 			}
 			if err := fetches.Err(); err != nil {
-				log.Printf("consume: %v", err)
+				if ctx.Err() != nil {
+					return // контекст отменён — это сигнал остановки, а не сбой чтения
+				}
 				// Ошибка чтения — не повод умирать: брокер мог мигнуть.
-				// Но чтобы не крутить цикл впустую при постоянной ошибке,
-				// спим миллисекунду; в проде здесь был бы экспоненциальный backoff.
+				log.Printf("consume: %v", err)
 				continue
 			}
 
@@ -76,6 +77,7 @@ func (c *Consumer) ConsumeTasks(ctx context.Context, tasks chan<- event.Task) (c
 				case <-ctx.Done():
 					return
 				}
+				log.Printf("consume: got task %s", t.URL)
 			})
 		}
 	}()

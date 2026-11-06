@@ -45,6 +45,9 @@ func (rt *Router) Run(ctx context.Context) {
 			return
 		}
 		if err := fetches.Err(); err != nil {
+			if ctx.Err() != nil {
+				return // отмена = сигнал остановки, а не сбой чтения
+			}
 			log.Printf("consume pages: %v", err)
 			continue
 		}

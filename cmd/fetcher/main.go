@@ -33,6 +33,7 @@ func main() {
 		fetcher.NewProbe(cfg.ProbeTimeout),
 		fetcher.NewDomainLimits(cfg.RatePerSec),
 		prod,
+		fetcher.NewRobots(cfg.ProbeTimeout),
 	)
 
 	consumerDone, err := consumer.ConsumeTasks(ctx, pool.Tasks())

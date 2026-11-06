@@ -11,8 +11,8 @@ import (
 // Config — настройки трёх сервисов проекта.
 type Config struct {
 	HTTPAddr     string        // api: адрес HTTP-сервера, ":8080"
-	KafkaAddr    string        // брокер: "localhost:9092"
-	RedisAddr    string        // Redis: "localhost:6379"
+	KafkaAddr    string        // брокер: "127.0.0.1:9093"
+	RedisAddr    string        // Redis: "127.0.0.1:6379"
 	SQLitePath   string        // файл базы: "aranea.db"
 	Workers      int           // fetcher: размер пула воркеров
 	MaxDepth     int           // ограничение глубины обхода по умолчанию
@@ -25,8 +25,8 @@ type Config struct {
 func New() Config {
 	return Config{
 		HTTPAddr:     getEnv("HTTP_ADDR", ":8080"),
-		KafkaAddr:    getEnv("KAFKA_ADDR", "localhost:9092"),
-		RedisAddr:    getEnv("REDIS_ADDR", "localhost:6379"),
+		KafkaAddr:    getEnv("KAFKA_ADDR", "127.0.0.1:9093"), // OUTSIDE-слушатель для клиентов с хоста
+		RedisAddr:    getEnv("REDIS_ADDR", "127.0.0.1:6379"),
 		SQLitePath:   getEnv("SQLITE_PATH", "aranea.db"),
 		Workers:      getInt("WORKERS", 16),
 		MaxDepth:     getInt("MAX_DEPTH", 3),

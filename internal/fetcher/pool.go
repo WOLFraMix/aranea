@@ -15,12 +15,13 @@ type Pool struct {
 	probe    *Probe
 	limits   *DomainLimits
 	producer *Producer
+	robots   *Robots
 
 	tasks   chan event.Task       // задачи воркерам
 	results chan event.PageResult // результаты от воркеров — одному сборщику
 }
 
-func New(cfg config.Config, pr *Probe, lim *DomainLimits, prod *Producer) *Pool {
+func New(cfg config.Config, pr *Probe, lim *DomainLimits, prod *Producer, rb *Robots) *Pool {
 	// Буферы = 2×воркеров: воркеры не блокируются друг о друга,
 	// а консюмер и продюсер не гасят пропускную способность пула
 	return &Pool{
@@ -28,6 +29,7 @@ func New(cfg config.Config, pr *Probe, lim *DomainLimits, prod *Producer) *Pool 
 		probe:    pr,
 		limits:   lim,
 		producer: prod,
+		robots:   rb,
 		tasks:    make(chan event.Task, cfg.Workers*2),
 		results:  make(chan event.PageResult, cfg.Workers*2),
 	}
@@ -91,6 +93,9 @@ func (p *Pool) workerLoop(ctx context.Context, id int) {
 				}
 				log.Printf("worker %d: skip %s: %v", id, t.URL, err)
 				continue
+			}
+			if !p.robots.Allow(ctx, t.URL) {
+				continue // вежливость важнее полноты
 			}
 
 			res := p.probe.Fetch(ctx, t)

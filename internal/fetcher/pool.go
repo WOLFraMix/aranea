@@ -7,6 +7,7 @@ import (
 
 	"github.com/WOLFraMix/aranea/internal/config"
 	"github.com/WOLFraMix/aranea/internal/event"
+	"github.com/redis/go-redis/v9"
 )
 
 // Pool — пул воркеров: fan-out на пробы, fan-in на сборщик результатов.
@@ -16,20 +17,20 @@ type Pool struct {
 	limits   *DomainLimits
 	producer *Producer
 	robots   *Robots
+	rdb      *redis.Client // проверка отмены краула перед скачиванием
 
-	tasks   chan event.Task       // задачи воркерам
-	results chan event.PageResult // результаты от воркеров — одному сборщику
+	tasks   chan event.Task
+	results chan event.PageResult
 }
 
-func New(cfg config.Config, pr *Probe, lim *DomainLimits, prod *Producer, rb *Robots) *Pool {
-	// Буферы = 2×воркеров: воркеры не блокируются друг о друга,
-	// а консюмер и продюсер не гасят пропускную способность пула
+func New(cfg config.Config, pr *Probe, lim *DomainLimits, prod *Producer, rb *Robots, rdb *redis.Client) *Pool {
 	return &Pool{
 		cfg:      cfg,
 		probe:    pr,
 		limits:   lim,
 		producer: prod,
 		robots:   rb,
+		rdb:      rdb,
 		tasks:    make(chan event.Task, cfg.Workers*2),
 		results:  make(chan event.PageResult, cfg.Workers*2),
 	}
@@ -86,6 +87,12 @@ func (p *Pool) workerLoop(ctx context.Context, id int) {
 		case <-ctx.Done():
 			return
 		case t := <-p.tasks:
+			// Отменённый краул: задачу выбрасываем без скачивания.
+			// Проверка стоит до всего — ни вежливости, ни robots, ни fetch.
+			if p.cancelled(ctx, t.CrawlID) {
+				log.Printf("worker: dropped task %s (crawl %d cancelled)", t.URL, t.CrawlID)
+				continue
+			}
 			// Вежливость к домену. Ошибка здесь — битый URL или отмена ctx.
 			if err := p.limits.Wait(ctx, t.URL); err != nil {
 				if ctx.Err() != nil {
@@ -110,4 +117,15 @@ func (p *Pool) workerLoop(ctx context.Context, id int) {
 			log.Printf("worker: published page %s", t.URL)
 		}
 	}
+}
+
+// cancelled спрашивает у Redis, не отменён ли краул.
+// При ошибке Redis отвечаем «не отменён»: сбой кэша не должен глушить конвейер.
+func (p *Pool) cancelled(ctx context.Context, crawlID int64) bool {
+	n, err := p.rdb.Exists(ctx, event.CancelKey(crawlID)).Result()
+	if err != nil {
+		log.Printf("worker: cancel check failed: %v", err)
+		return false
+	}
+	return n > 0
 }

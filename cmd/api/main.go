@@ -39,6 +39,17 @@ func main() {
 	}
 	defer db.Close()
 
+	// Счётчик не должен раздавать номера, уже занятые legacy-краулами
+	// в базе (эра MAX+1): если Redis отстаёт от MAX(crawl_id) — подтягиваем.
+	var maxID int64
+	if err := db.QueryRow(`SELECT COALESCE(MAX(crawl_id), 0) FROM pages`).Scan(&maxID); err == nil && maxID > 0 {
+		ctxSync, cancelSync := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancelSync()
+		if v, err := rdb.Get(ctxSync, "aranea:crawl_seq").Int64(); err != nil || v < maxID {
+			rdb.Set(ctxSync, "aranea:crawl_seq", maxID, 0) // следующий INCR даст maxID+1
+		}
+	}
+
 	prod, err := fetcher.NewProducer(kafkaAddr)
 	if err != nil {
 		log.Fatalf("api: producer: %v", err)

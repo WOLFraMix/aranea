@@ -31,6 +31,25 @@ services:
       timeout: 5s
       retries: 3
 
+  # GUI для Kafka: топики, сообщения, лаги консюмер-групп
+  console:
+    image: docker.redpanda.com/redpandadata/console:latest
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8081:8080"
+    depends_on:
+      - redpanda
+
+  # GUI для Redis: все ключи, их содержимое и TTL, встроенный CLI
+  redisinsight:
+    image: redis/redisinsight:latest
+    ports:
+      - "5540:5540"
+    volumes:
+      - redisinsight-data:/data
+
 volumes:
   redpanda-data:
   redis-data:
+  redisinsight-data:

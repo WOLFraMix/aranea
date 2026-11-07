@@ -4,12 +4,21 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/WOLFraMix/aranea/internal/config"
 	"github.com/WOLFraMix/aranea/internal/fetcher"
+	"github.com/redis/go-redis/v9"
 )
+
+func env(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -23,6 +32,8 @@ func main() {
 	}
 	defer prod.Close()
 
+	rdb := redis.NewClient(&redis.Options{Addr: env("REDIS_ADDR", "127.0.0.1:6379")})
+
 	consumer, err := fetcher.NewConsumer(cfg.KafkaAddr)
 	if err != nil {
 		log.Fatalf("consumer: %v", err)
@@ -34,6 +45,7 @@ func main() {
 		fetcher.NewDomainLimits(cfg.RatePerSec),
 		prod,
 		fetcher.NewRobots(cfg.ProbeTimeout),
+		rdb,
 	)
 
 	consumerDone, err := consumer.ConsumeTasks(ctx, pool.Tasks())

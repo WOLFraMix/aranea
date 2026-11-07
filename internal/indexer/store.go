@@ -12,8 +12,6 @@ import (
 	"github.com/WOLFraMix/aranea/internal/event"
 )
 
-const seenKey = "aranea:seen" // SET всех встреченных URL
-
 // Store — дедуп через Redis и хранение страниц в SQLite.
 type Store struct {
 	rdb *redis.Client
@@ -48,7 +46,8 @@ func NewStore(redisAddr, sqlitePath string) (*Store, error) {
 		error      TEXT,
 		fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
-	CREATE UNIQUE INDEX IF NOT EXISTS idx_pages_url ON pages(url);
+	DROP INDEX IF EXISTS idx_pages_url;
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_pages_crawl_url ON pages(crawl_id, url);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("schema: %w", err)
@@ -56,10 +55,16 @@ func NewStore(redisAddr, sqlitePath string) (*Store, error) {
 	return &Store{rdb: rdb, db: db}, nil
 }
 
-// Visit атомарно отмечает URL как виденный. Возвращает true, если мы первые:
-// SADD — тот самый атомарный test-and-set, который чинит race condition.
-func (s *Store) Visit(ctx context.Context, rawURL string) (bool, error) {
-	n, err := s.rdb.SAdd(ctx, seenKey, rawURL).Result()
+// seenKey делает ключ дедупа на каждый краул: атомарный SADD работает
+// в пределах одного краула, разные краулы не засоряют друг друга.
+func seenKey(crawlID int64) string {
+	return fmt.Sprintf("aranea:seen:%d", crawlID)
+}
+
+// Visit атомарно отмечает URL как виденный В РАМКАХ краула crawlID.
+// Возвращает true, если мы первые — как раньше, но теперь per-crawl.
+func (s *Store) Visit(ctx context.Context, crawlID int64, rawURL string) (bool, error) {
+	n, err := s.rdb.SAdd(ctx, seenKey(crawlID), rawURL).Result()
 	if err != nil {
 		return false, fmt.Errorf("sadd: %w", err)
 	}

@@ -21,9 +21,8 @@ func NewConsumer(addr string) (*Consumer, error) {
 		kgo.SeedBrokers(addr),
 		kgo.ConsumerGroup("aranea-fetchers"),
 		kgo.ConsumeTopics(event.TopicTasks),
-		// Новая группа: читать с начала топика, а не с «сейчас».
-		// Без этого задачу, подложенную до старта fetcher'а, легко пропустить.
-		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+		// Офсеты коммитим после обработки (at-least-once): рестарт
+		// дообслуживает недообработанное, а не переигрывает всю историю.
 	)
 	if err != nil {
 		return nil, err

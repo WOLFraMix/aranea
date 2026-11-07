@@ -3,11 +3,12 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"log"
 	"net/http"
 	"net/url"
 	"strconv"
+
+	"github.com/redis/go-redis/v9"
 
 	"github.com/WOLFraMix/aranea/internal/event"
 	"github.com/WOLFraMix/aranea/internal/fetcher"
@@ -16,11 +17,12 @@ import (
 type Server struct {
 	db       *sql.DB
 	prod     *fetcher.Producer
+	rdb      *redis.Client // счётчик crawl_id: атомарный INCR, переживает пустые краулы
 	maxDepth int
 }
 
-func New(db *sql.DB, prod *fetcher.Producer, maxDepth int) *Server {
-	return &Server{db: db, prod: prod, maxDepth: maxDepth}
+func New(db *sql.DB, prod *fetcher.Producer, rdb *redis.Client, maxDepth int) *Server {
+	return &Server{db: db, prod: prod, rdb: rdb, maxDepth: maxDepth}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -51,17 +53,16 @@ func (s *Server) startCrawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// crawl_id: max+1 по страницам. Для локального инстанса достаточно;
-	// в проде здесь был бы Redis INCR, чтобы два одновременных старта не совпали.
-	var id int64
-	err = s.db.QueryRow(`SELECT COALESCE(MAX(crawl_id), 0) + 1 FROM pages`).Scan(&id)
+	// crawl_id из Redis INCR: атомарный счётчик. Пустой краул номер
+	// не «отменяет» — два одновременных старта гарантированно разойдутся.
+	id, err := s.rdb.Incr(r.Context(), "aranea:crawl_seq").Result()
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "db: "+err.Error())
+		httpError(w, http.StatusBadGateway, "redis: "+err.Error())
 		return
 	}
 
 	t := event.Task{CrawlID: id, URL: u.String(), Depth: 0}
-	if err := s.prod.Publish(r.Context(), "aranea.tasks", t); err != nil {
+	if err := s.prod.Publish(r.Context(), event.TopicTasks, t); err != nil {
 		httpError(w, http.StatusBadGateway, "publish: "+err.Error())
 		return
 	}
@@ -103,7 +104,7 @@ func (s *Server) crawlPages(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var p page
 		if err := rows.Scan(&p.URL, &p.StatusCode, &p.LatencyMs, &p.Title, &p.Depth); err != nil {
-			log.Printf("scan page: %v", err) // теперь ошибка видна, а не съедена
+			log.Printf("scan page: %v", err) // ошибка видна, а не съедена
 			continue
 		}
 		pages = append(pages, p)
@@ -138,9 +139,15 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	hits := []hit{}
 	for rows.Next() {
 		var h hit
-		if err := rows.Scan(&h.CrawlID, &h.URL, &h.Title); err == nil {
-			hits = append(hits, h)
+		if err := rows.Scan(&h.CrawlID, &h.URL, &h.Title); err != nil {
+			log.Printf("scan hit: %v", err) // тот же принцип, что в crawlPages
+			continue
 		}
+		hits = append(hits, h)
+	}
+	if err := rows.Err(); err != nil {
+		httpError(w, http.StatusInternalServerError, "rows: "+err.Error())
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"query": q, "hits": hits})
 }
@@ -170,5 +177,3 @@ func clampInt(s string, min, max, def int) int {
 	}
 	return n
 }
-
-var _ = errors.Is // убрать, если не понадобится

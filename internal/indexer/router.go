@@ -27,7 +27,6 @@ func New(cfg config.Config, store *Store, prod *fetcher.Producer) (*Router, erro
 		kgo.SeedBrokers(cfg.KafkaAddr),
 		kgo.ConsumerGroup("aranea-indexers"),
 		kgo.ConsumeTopics(event.TopicPages),
-		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
 	)
 	if err != nil {
 		return nil, err
@@ -97,7 +96,7 @@ func (rt *Router) handle(ctx context.Context, res event.PageResult) {
 		}
 
 		// Атомарный дедуп: false = кто-то уже видел, пропускаем молча.
-		fresh, err := rt.store.Visit(ctx, u.String())
+		fresh, err := rt.store.Visit(ctx, res.CrawlID, u.String())
 		if err != nil {
 			log.Printf("dedup %s: %v", u, err)
 			continue

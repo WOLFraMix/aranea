@@ -15,6 +15,7 @@ import (
 
 	"github.com/WOLFraMix/aranea/internal/api"
 	"github.com/WOLFraMix/aranea/internal/fetcher"
+	"github.com/redis/go-redis/v9"
 )
 
 func env(key, def string) string {
@@ -26,8 +27,11 @@ func env(key, def string) string {
 
 func main() {
 	kafkaAddr := env("KAFKA_ADDR", "127.0.0.1:9093")
+	redisAddr := env("REDIS_ADDR", "127.0.0.1:6379")
 	dbPath := env("DB_PATH", "aranea.db")
 	maxDepth, _ := strconv.Atoi(env("MAX_DEPTH", "3"))
+
+	rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
 
 	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
 	if err != nil {
@@ -41,7 +45,7 @@ func main() {
 	}
 	defer prod.Close()
 
-	srv := api.New(db, prod, maxDepth)
+	srv := api.New(db, prod, rdb, maxDepth)
 
 	httpSrv := &http.Server{
 		Addr:              ":8080",
@@ -62,6 +66,8 @@ func main() {
 	<-ctx.Done()
 	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	httpSrv.Shutdown(shutCtx)
+	if err := httpSrv.Shutdown(shutCtx); err != nil {
+		log.Printf("api: shutdown: %v", err)
+	}
 	log.Printf("api: stopped")
 }

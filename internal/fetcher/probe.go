@@ -73,7 +73,6 @@ func (pr *Probe) Fetch(ctx context.Context, t event.Task) event.PageResult {
 
 	res.Title = extractTitle(bytes.NewReader(body))
 	res.Links = extractLinks(base, bytes.NewReader(body))
-	log.Printf("fetch: %s body=%dB title=%q links=%v", t.URL, len(body), res.Title, res.Links) // ← временная
 	return res
 }
 

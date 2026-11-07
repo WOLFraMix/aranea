@@ -1,0 +1,174 @@
+package api
+
+import (
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"log"
+	"net/http"
+	"net/url"
+	"strconv"
+
+	"github.com/WOLFraMix/aranea/internal/event"
+	"github.com/WOLFraMix/aranea/internal/fetcher"
+)
+
+type Server struct {
+	db       *sql.DB
+	prod     *fetcher.Producer
+	maxDepth int
+}
+
+func New(db *sql.DB, prod *fetcher.Producer, maxDepth int) *Server {
+	return &Server{db: db, prod: prod, maxDepth: maxDepth}
+}
+
+func (s *Server) Routes() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/crawls", s.startCrawl)
+	mux.HandleFunc("GET /api/crawls/{id}/pages", s.crawlPages)
+	mux.HandleFunc("GET /api/search", s.search)
+	return mux
+}
+
+func (s *Server) startCrawl(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		URL   string `json:"url"`
+		Depth int    `json:"depth"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+
+	u, err := url.Parse(req.URL)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		httpError(w, http.StatusBadRequest, "url must be an absolute http(s) URL")
+		return
+	}
+	if req.Depth < 0 || req.Depth > s.maxDepth {
+		httpError(w, http.StatusBadRequest, "depth must be between 0 and "+strconv.Itoa(s.maxDepth))
+		return
+	}
+
+	// crawl_id: max+1 по страницам. Для локального инстанса достаточно;
+	// в проде здесь был бы Redis INCR, чтобы два одновременных старта не совпали.
+	var id int64
+	err = s.db.QueryRow(`SELECT COALESCE(MAX(crawl_id), 0) + 1 FROM pages`).Scan(&id)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "db: "+err.Error())
+		return
+	}
+
+	t := event.Task{CrawlID: id, URL: u.String(), Depth: 0}
+	if err := s.prod.Publish(r.Context(), "aranea.tasks", t); err != nil {
+		httpError(w, http.StatusBadGateway, "publish: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"crawl_id": id,
+		"url":      t.URL,
+		"depth":    req.Depth,
+	})
+}
+
+func (s *Server) crawlPages(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "bad crawl id")
+		return
+	}
+	limit := clampInt(r.URL.Query().Get("limit"), 1, 100, 20)
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+
+	rows, err := s.db.Query(
+		`SELECT url, status_code, latency_ms, COALESCE(title, ''), COALESCE(depth, 0)
+		 FROM pages WHERE crawl_id = ? ORDER BY rowid LIMIT ? OFFSET ?`,
+		id, limit, offset)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "db: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	type page struct {
+		URL        string `json:"url"`
+		StatusCode int    `json:"status_code"`
+		LatencyMs  int64  `json:"latency_ms"`
+		Title      string `json:"title"`
+		Depth      int    `json:"depth"`
+	}
+	pages := []page{}
+	for rows.Next() {
+		var p page
+		if err := rows.Scan(&p.URL, &p.StatusCode, &p.LatencyMs, &p.Title, &p.Depth); err != nil {
+			log.Printf("scan page: %v", err) // теперь ошибка видна, а не съедена
+			continue
+		}
+		pages = append(pages, p)
+	}
+	if err := rows.Err(); err != nil {
+		httpError(w, http.StatusInternalServerError, "rows: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"crawl_id": id, "pages": pages})
+}
+
+func (s *Server) search(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		httpError(w, http.StatusBadRequest, "q is required")
+		return
+	}
+	rows, err := s.db.Query(
+		`SELECT crawl_id, url, COALESCE(title, '')
+		 FROM pages WHERE title LIKE '%' || ? || '%' ORDER BY rowid DESC LIMIT 50`, q)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "db: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	type hit struct {
+		CrawlID int64  `json:"crawl_id"`
+		URL     string `json:"url"`
+		Title   string `json:"title"`
+	}
+	hits := []hit{}
+	for rows.Next() {
+		var h hit
+		if err := rows.Scan(&h.CrawlID, &h.URL, &h.Title); err == nil {
+			hits = append(hits, h)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"query": q, "hits": hits})
+}
+
+// --- утилиты ---
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(v)
+}
+
+func httpError(w http.ResponseWriter, code int, msg string) {
+	writeJSON(w, code, map[string]any{"error": msg})
+}
+
+func clampInt(s string, min, max, def int) int {
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return def
+	}
+	if n < min {
+		return min
+	}
+	if n > max {
+		return max
+	}
+	return n
+}
+
+var _ = errors.Is // убрать, если не понадобится

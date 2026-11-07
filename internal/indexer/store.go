@@ -27,7 +27,8 @@ func NewStore(redisAddr, sqlitePath string) (*Store, error) {
 		return nil, fmt.Errorf("redis: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", sqlitePath)
+	db, err := sql.Open("sqlite",
+		sqlitePath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: %w", err)
 	}

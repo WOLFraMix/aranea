@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -63,10 +64,18 @@ func (s *Server) startCrawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	t := event.Task{CrawlID: id, URL: u.String(), Depth: 0}
+	// Лимит глубины едет в событии: каждый краул ограничен своим depth,
+	// а не глобальным MAX_DEPTH из конфига.
+	t := event.Task{CrawlID: id, URL: u.String(), Depth: 0, MaxDepth: req.Depth}
 	if err := s.prod.Publish(r.Context(), event.TopicTasks, t); err != nil {
 		httpError(w, http.StatusBadGateway, "publish: "+err.Error())
 		return
+	}
+
+	// Seed сразу в дедуп-SET: после рестарта indexer'а краул не скачает
+	// его повторно, а ссылки на seed с детей не отправят его в цикл.
+	if err := s.rdb.SAdd(r.Context(), fmt.Sprintf("aranea:seen:%d", id), t.URL).Err(); err != nil {
+		log.Printf("dedup seed %s: %v", t.URL, err) // не роняем запрос — SET пересоберётся из событий
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{

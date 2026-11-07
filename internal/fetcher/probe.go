@@ -29,7 +29,7 @@ func NewProbe(timeout time.Duration) *Probe {
 // результат события, indexer решит, что с ней делать.
 func (pr *Probe) Fetch(ctx context.Context, t event.Task) event.PageResult {
 	started := time.Now()
-	res := event.PageResult{CrawlID: t.CrawlID, URL: t.URL, Depth: t.Depth}
+	res := event.PageResult{CrawlID: t.CrawlID, URL: t.URL, Depth: t.Depth, MaxDepth: t.MaxDepth}
 
 	// ctx в запросе: отмена краула отменяет и летящие HTTP-запросы
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.URL, nil)

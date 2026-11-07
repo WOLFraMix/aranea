@@ -83,6 +83,11 @@ func (rt *Router) handle(ctx context.Context, res event.PageResult) {
 		return // база битая — ссылки не на что натягивать
 	}
 
+	limit := res.MaxDepth
+	if limit <= 0 {
+		limit = rt.cfg.MaxDepth // старые события без поля — откат на глобальный лимит
+	}
+
 	for _, link := range res.Links {
 		// ResolveReference: главное заклинание нормализации. Относительные
 		// ссылки (/about, ../x, //other.com/a) правильно натягиваются на базу.
@@ -95,7 +100,7 @@ func (rt *Router) handle(ctx context.Context, res event.PageResult) {
 		if u.Scheme != "http" && u.Scheme != "https" {
 			continue // mailto:, javascript:, data: — не наше
 		}
-		if res.Depth+1 > rt.cfg.MaxDepth {
+		if res.Depth+1 > limit {
 			continue
 		}
 
@@ -110,9 +115,10 @@ func (rt *Router) handle(ctx context.Context, res event.PageResult) {
 		}
 
 		if err := rt.producer.Publish(ctx, event.TopicTasks, event.Task{
-			CrawlID: res.CrawlID,
-			URL:     u.String(),
-			Depth:   res.Depth + 1,
+			CrawlID:  res.CrawlID,
+			URL:      u.String(),
+			Depth:    res.Depth + 1,
+			MaxDepth: limit,
 		}); err != nil {
 			log.Printf("publish task %s: %v", u, err)
 		}

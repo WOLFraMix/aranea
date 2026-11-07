@@ -90,3 +90,9 @@ func (s *Store) Close() {
 	s.rdb.Close()
 	s.db.Close()
 }
+
+// Cancelled сообщает, запрошена ли отмена краула.
+func (s *Store) Cancelled(ctx context.Context, crawlID int64) bool {
+	n, err := s.rdb.Exists(ctx, event.CancelKey(crawlID)).Result()
+	return err == nil && n > 0 // при ошибке Redis краул не глохнет — at-least-once продолжит
+}

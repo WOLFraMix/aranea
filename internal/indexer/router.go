@@ -70,6 +70,9 @@ func (rt *Router) Run(ctx context.Context) {
 
 // handle — вся бизнес-логика indexer'а для одной страницы.
 func (rt *Router) handle(ctx context.Context, res event.PageResult) {
+	if rt.store.Cancelled(ctx, res.CrawlID) {
+		return // краул отменён: страницу не обрабатываем, ссылки не порождаем
+	}
 	if err := rt.store.Save(ctx, res); err != nil {
 		log.Printf("save %s: %v", res.URL, err)
 	}

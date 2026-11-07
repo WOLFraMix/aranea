@@ -1,6 +1,8 @@
 // Package event — контракт событий в Kafka: топики и payloads.
 package event
 
+import "fmt"
+
 // TopicTasks — очередь URL: api кладёт seed, indexer кладёт найденные ссылки.
 const TopicTasks = "aranea.tasks"
 
@@ -27,4 +29,9 @@ type PageResult struct {
 	Title      string   `json:"title,omitempty"`
 	Error      string   `json:"error,omitempty"`
 	Links      []string `json:"links,omitempty"` // все href со страницы, до нормализации
+}
+
+// CancelKey — маркер отмены краула: SETNX от API, EXISTS в indexer'е.
+func CancelKey(crawlID int64) string {
+	return fmt.Sprintf("aranea:cancel:%d", crawlID)
 }

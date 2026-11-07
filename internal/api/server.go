@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
@@ -30,6 +31,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/crawls", s.startCrawl)
 	mux.HandleFunc("GET /api/crawls/{id}/pages", s.crawlPages)
 	mux.HandleFunc("GET /api/search", s.search)
+	mux.HandleFunc("DELETE /api/crawls/{id}", s.cancelCrawl)
 	return mux
 }
 
@@ -176,4 +178,23 @@ func clampInt(s string, min, max, def int) int {
 		return max
 	}
 	return n
+}
+
+func (s *Server) cancelCrawl(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		httpError(w, http.StatusBadRequest, "bad crawl id")
+		return
+	}
+	// SETNX: повторный DELETE не продлевает и не путает статус.
+	ok, err := s.rdb.SetNX(r.Context(), event.CancelKey(id), 1, 24*time.Hour).Result()
+	if err != nil {
+		httpError(w, http.StatusBadGateway, "redis: "+err.Error())
+		return
+	}
+	status := "cancelled"
+	if !ok {
+		status = "already cancelling"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"crawl_id": id, "status": status})
 }

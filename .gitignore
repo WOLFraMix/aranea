@@ -1,23 +1,55 @@
-.vscode/
+# --- сборка Go ---
+/main
+*.exe
+*.test
+*.out
+*.prof
+coverage.html
+coverage.out
+
+# --- артефакты сборки ---
+build/
+/bin/
+/dist/
+*.zip
 *.dll
 *.so
-build/
-dist/
-coverage.out
-instruction.txt
-.env
-/dist/
-.idea/
-*.swp
+
+# --- SQLite (база и WAL-артефакты) ---
+*.db
+*.db-shm
+*.db-wal
+
+# --- логи ---
 *.log
-Thumbs.db
-.DS_Store
+/logs/
+
+# --- IDE / tooling ---
+.vscode/
+.gigacode_vsc/
+.gigarc
+.idea/
+*.iml
+*.swp
+
+# --- env / secrets ---
+.env
+.env.*
+!.env.example
+
+# --- локальные данные (volume из docker-compose) ---
+postgres_data/
+
+# --- прочие локальные файлы ---
 highscore.json
 settings.json
-*.exe
-*.zip
-struct.*
-*.txt
-*.png
-*.db
-/bin/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- личные заметки ---
+/instruction.txt
+/notes.txt
+/struct.png

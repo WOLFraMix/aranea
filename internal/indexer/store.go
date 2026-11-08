@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	_ "modernc.org/sqlite" // чистый Go-драйвер: важен наш CGO_ENABLED=0 в Dockerfile
@@ -95,4 +96,25 @@ func (s *Store) Close() {
 func (s *Store) Cancelled(ctx context.Context, crawlID int64) bool {
 	n, err := s.rdb.Exists(ctx, event.CancelKey(crawlID)).Result()
 	return err == nil && n > 0 // при ошибке Redis краул не глохнет — at-least-once продолжит
+}
+
+// CountPublished отмечает публикацию новой задачи краула (seed или ребёнок).
+// Счётчики с TTL: через сутки после смерти краула они исчезают сами.
+func (s *Store) CountPublished(ctx context.Context, crawlID int64) error {
+	key := fmt.Sprintf("aranea:published:%d", crawlID)
+	if err := s.rdb.Incr(ctx, key).Err(); err != nil {
+		return fmt.Errorf("incr published: %w", err)
+	}
+	s.rdb.Expire(ctx, key, 24*time.Hour)
+	return nil
+}
+
+// CountProcessed отмечает обработанную страницу — вызывается после Save.
+func (s *Store) CountProcessed(ctx context.Context, crawlID int64) error {
+	key := fmt.Sprintf("aranea:processed:%d", crawlID)
+	if err := s.rdb.Incr(ctx, key).Err(); err != nil {
+		return fmt.Errorf("incr processed: %w", err)
+	}
+	s.rdb.Expire(ctx, key, 24*time.Hour)
+	return nil
 }

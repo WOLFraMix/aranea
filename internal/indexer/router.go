@@ -78,6 +78,13 @@ func (rt *Router) handle(ctx context.Context, res event.PageResult) {
 		log.Printf("save %s: %v", res.URL, err)
 	}
 
+	if err := rt.store.Save(ctx, res); err != nil {
+		log.Printf("save %s: %v", res.URL, err)
+	}
+	if err := rt.store.CountProcessed(ctx, res.CrawlID); err != nil {
+		log.Printf("count processed: %v", err)
+	}
+
 	base, err := url.Parse(res.URL)
 	if err != nil {
 		return // база битая — ссылки не на что натягивать
@@ -114,6 +121,10 @@ func (rt *Router) handle(ctx context.Context, res event.PageResult) {
 		}
 		if !fresh {
 			continue
+		}
+
+		if err := rt.store.CountPublished(ctx, res.CrawlID); err != nil {
+			log.Printf("count published: %v", err)
 		}
 
 		if err := rt.producer.Publish(ctx, event.TopicTasks, event.Task{

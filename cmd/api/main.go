@@ -37,6 +37,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("api: open db: %v", err)
 	}
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS crawls (
+			id         INTEGER PRIMARY KEY,
+			url        TEXT NOT NULL,
+			depth      INTEGER NOT NULL,
+			status     TEXT NOT NULL DEFAULT 'running',
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)`); err != nil {
+		log.Fatalf("api: schema: %v", err)
+	}
 	defer db.Close()
 
 	// Счётчик не должен раздавать номера, уже занятые legacy-краулами

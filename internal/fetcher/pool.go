@@ -102,7 +102,18 @@ func (p *Pool) workerLoop(ctx context.Context, id int) {
 				continue
 			}
 			if !p.robots.Allow(ctx, t.URL) {
-				continue // вежливость важнее полноты
+				// Блокировка robots — тоже результат: краул увидит её в базе,
+				// а счётчик processed не зависнет.
+				res := event.PageResult{
+					CrawlID: t.CrawlID, URL: t.URL, Depth: t.Depth,
+					MaxDepth: t.MaxDepth, Error: "robots disallow",
+				}
+				select {
+				case p.results <- res:
+				case <-ctx.Done():
+					return
+				}
+				continue
 			}
 
 			res := p.probe.Fetch(ctx, t)

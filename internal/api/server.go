@@ -34,6 +34,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/crawls/{id}/pages", s.crawlPages)
 	mux.HandleFunc("GET /api/search", s.search)
 	mux.HandleFunc("DELETE /api/crawls/{id}", s.cancelCrawl)
+	mux.HandleFunc("GET /api/crawls", s.listCrawls)
 	return mux
 }
 
@@ -65,6 +66,13 @@ func (s *Server) startCrawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if _, err := s.db.ExecContext(r.Context(),
+		`INSERT INTO crawls (id, url, depth) VALUES (?, ?, ?)`,
+		id, u.String(), req.Depth); err != nil {
+		httpError(w, http.StatusInternalServerError, "db: "+err.Error())
+		return
+	}
+
 	// Лимит глубины едет в событии: каждый краул ограничен своим depth,
 	// а не глобальным MAX_DEPTH из конфига.
 	t := event.Task{CrawlID: id, URL: u.String(), Depth: 0, MaxDepth: &req.Depth}
@@ -78,6 +86,11 @@ func (s *Server) startCrawl(w http.ResponseWriter, r *http.Request) {
 	if err := s.rdb.SAdd(r.Context(), fmt.Sprintf("aranea:seen:%d", id), t.URL).Err(); err != nil {
 		log.Printf("dedup seed %s: %v", t.URL, err) // не роняем запрос — SET пересоберётся из событий
 	}
+
+	if err := s.rdb.Incr(r.Context(), fmt.Sprintf("aranea:published:%d", id)).Err(); err != nil {
+		log.Printf("publish counter: %v", err)
+	}
+	s.rdb.Expire(r.Context(), fmt.Sprintf("aranea:published:%d", id), 24*time.Hour)
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"crawl_id": id,
@@ -207,5 +220,51 @@ func (s *Server) cancelCrawl(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		status = "already cancelling"
 	}
+	if _, err := s.db.Exec(`UPDATE crawls SET status = 'cancelled' WHERE id = ?`, id); err != nil {
+		log.Printf("cancel status update: %v", err)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"crawl_id": id, "status": status})
+}
+
+func (s *Server) listCrawls(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.db.Query(
+		`SELECT id, url, depth, status, COALESCE(created_at, '')
+		 FROM crawls ORDER BY id DESC LIMIT 50`)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "db: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	type crawl struct {
+		ID        int64  `json:"crawl_id"`
+		URL       string `json:"url"`
+		Depth     int    `json:"depth"`
+		Status    string `json:"status"`
+		CreatedAt string `json:"created_at"`
+	}
+	out := []crawl{}
+	for rows.Next() {
+		var c crawl
+		if err := rows.Scan(&c.ID, &c.URL, &c.Depth, &c.Status, &c.CreatedAt); err != nil {
+			log.Printf("scan crawl: %v", err)
+			continue
+		}
+		// Живой статус поверх записанного: отмена важнее всего,
+		// затем сверка счётчиков задач.
+		switch {
+		case s.rdb.Exists(r.Context(), event.CancelKey(c.ID)).Val() > 0:
+			c.Status = "cancelled"
+		default:
+			pub, _ := s.rdb.Get(r.Context(), fmt.Sprintf("aranea:published:%d", c.ID)).Int()
+			proc, _ := s.rdb.Get(r.Context(), fmt.Sprintf("aranea:processed:%d", c.ID)).Int()
+			if pub > 0 && proc >= pub {
+				c.Status = "finished"
+			} else if c.Status == "" {
+				c.Status = "running"
+			}
+		}
+		out = append(out, c)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"crawls": out})
 }

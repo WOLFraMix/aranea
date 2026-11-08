@@ -14,7 +14,7 @@ type Task struct {
 	CrawlID  int64  `json:"crawl_id"`
 	URL      string `json:"url"`
 	Depth    int    `json:"depth"`
-	MaxDepth int    `json:"max_depth,omitempty"` // лимит ЭТОГО краула
+	MaxDepth *int   `json:"max_depth,omitempty"` // лимит ЭТОГО краула
 }
 
 // PageResult — то, что вернул fetcher после скачивания.
@@ -30,7 +30,7 @@ type PageResult struct {
 	Title      string   `json:"title,omitempty"`
 	Error      string   `json:"error,omitempty"`
 	Links      []string `json:"links,omitempty"`     // все href со страницы, до нормализации
-	MaxDepth   int      `json:"max_depth,omitempty"` // лимит ЭТОГО краула
+	MaxDepth   *int     `json:"max_depth,omitempty"` // лимит ЭТОГО краула
 }
 
 // CancelKey — маркер отмены краула: SETNX от API, EXISTS в indexer'е.

@@ -67,7 +67,7 @@ func (s *Server) startCrawl(w http.ResponseWriter, r *http.Request) {
 
 	// Лимит глубины едет в событии: каждый краул ограничен своим depth,
 	// а не глобальным MAX_DEPTH из конфига.
-	t := event.Task{CrawlID: id, URL: u.String(), Depth: 0, MaxDepth: req.Depth}
+	t := event.Task{CrawlID: id, URL: u.String(), Depth: 0, MaxDepth: &req.Depth}
 	if err := s.prod.Publish(r.Context(), event.TopicTasks, t); err != nil {
 		httpError(w, http.StatusBadGateway, "publish: "+err.Error())
 		return

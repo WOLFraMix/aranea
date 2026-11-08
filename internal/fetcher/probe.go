@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -60,6 +61,12 @@ func (pr *Probe) Fetch(ctx context.Context, t event.Task) event.PageResult {
 		res.Error = "read body: " + err.Error()
 		return res
 	}
+
+	n := len(body)
+	if n > 300 {
+		n = 300
+	}
+	log.Printf("probe: %s body=%d snippet=%q", t.URL, len(body), string(body[:n]))
 
 	// База для натягивания относительных ссылок — сам URL страницы.
 	base, err := url.Parse(t.URL)

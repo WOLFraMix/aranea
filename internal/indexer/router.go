@@ -83,9 +83,11 @@ func (rt *Router) handle(ctx context.Context, res event.PageResult) {
 		return // база битая — ссылки не на что натягивать
 	}
 
-	limit := res.MaxDepth
-	if limit <= 0 {
-		limit = rt.cfg.MaxDepth // старые события без поля — откат на глобальный лимит
+	// Лимит краула: nil = событие старого формата, берём глобальный конфиг.
+	// Именно nil, а не ноль: depth 0 — валидный краул «только seed».
+	limit := rt.cfg.MaxDepth
+	if res.MaxDepth != nil {
+		limit = *res.MaxDepth
 	}
 
 	for _, link := range res.Links {
@@ -118,7 +120,7 @@ func (rt *Router) handle(ctx context.Context, res event.PageResult) {
 			CrawlID:  res.CrawlID,
 			URL:      u.String(),
 			Depth:    res.Depth + 1,
-			MaxDepth: limit,
+			MaxDepth: res.MaxDepth,
 		}); err != nil {
 			log.Printf("publish task %s: %v", u, err)
 		}

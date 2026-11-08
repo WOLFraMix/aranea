@@ -7,24 +7,47 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/time/rate"
 )
+
+type limEntry struct {
+	lim  *rate.Limiter
+	last time.Time
+}
 
 // DomainLimits ограничивает частоту запросов отдельно на каждый домен.
 // Это отличает вежливый краулер от «долбилки»: разные сайты не мешают
 // друг другу, а один не нагружается чаще лимита.
 type DomainLimits struct {
-	mu   sync.Mutex               // защищает доступ к map из многих воркеров
-	lims map[string]*rate.Limiter // host -> лимитер этого домена
-	r    rate.Limit               // запросов в секунду на каждый домен
+	mu   sync.Mutex
+	lims map[string]*limEntry
+	r    rate.Limit
 }
 
 // NewDomainLimits создаёт таблицу лимитов: perSec запросов/сек на домен.
 func NewDomainLimits(perSec int) *DomainLimits {
-	return &DomainLimits{
-		lims: make(map[string]*rate.Limiter),
+	d := &DomainLimits{
+		lims: make(map[string]*limEntry),
 		r:    rate.Limit(perSec),
+	}
+	go d.janitor()
+	return d
+}
+
+// janitor выселяет лимитеры доменов, к которым не обращались дольше часа:
+// тысячи пройденных доменов не должны копиться в памяти вечно.
+func (d *DomainLimits) janitor() {
+	t := time.NewTicker(10 * time.Minute)
+	for range t.C {
+		d.mu.Lock()
+		for host, e := range d.lims {
+			if time.Since(e.last) > time.Hour {
+				delete(d.lims, host)
+			}
+		}
+		d.mu.Unlock()
 	}
 }
 
@@ -47,11 +70,13 @@ func (d *DomainLimits) Wait(ctx context.Context, rawURL string) error {
 	// get-or-create под ОДНИМ захватом мьютекса: проверка и вставка в map
 	// атомарны, поэтому два воркера не создадут по лимитеру на один домен.
 	d.mu.Lock()
-	limiter, ok := d.lims[host]
+	entry, ok := d.lims[host]
 	if !ok {
-		limiter = rate.NewLimiter(d.r, 1) // burst=1: не копим «пакеты» запросов
-		d.lims[host] = limiter
+		entry = &limEntry{lim: rate.NewLimiter(d.r, 1)}
+		d.lims[host] = entry
 	}
+	entry.last = time.Now()
+	limiter := entry.lim
 	d.mu.Unlock()
 
 	// Ждём уже ВНЕ мьютекса: rate.Limiter безопасен для параллельного использования,

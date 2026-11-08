@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -133,9 +134,10 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "q is required")
 		return
 	}
+	q = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(q)
 	rows, err := s.db.Query(
 		`SELECT crawl_id, url, COALESCE(title, '')
-		 FROM pages WHERE title LIKE '%' || ? || '%' ORDER BY rowid DESC LIMIT 50`, q)
+		 FROM pages WHERE title LIKE '%' || ? || '%' ESCAPE '\' ORDER BY rowid DESC LIMIT 50`, q)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "db: "+err.Error())
 		return

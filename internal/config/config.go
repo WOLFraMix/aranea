@@ -27,7 +27,7 @@ func New() Config {
 		HTTPAddr:     getEnv("HTTP_ADDR", ":8080"),
 		KafkaAddr:    getEnv("KAFKA_ADDR", "127.0.0.1:9093"), // OUTSIDE-слушатель для клиентов с хоста
 		RedisAddr:    getEnv("REDIS_ADDR", "127.0.0.1:6379"),
-		SQLitePath:   getEnv("SQLITE_PATH", "aranea.db"),
+		SQLitePath:   getEnv("DB_PATH", "aranea.db"),
 		Workers:      getInt("WORKERS", 16),
 		MaxDepth:     getInt("MAX_DEPTH", 3),
 		MaxPerDomain: getInt("MAX_PER_DOMAIN", 200),

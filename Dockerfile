@@ -32,6 +32,10 @@ FROM alpine:3.24.3
 # работать от root: даже если сервис скомпрометирован, прав у него минимум
 RUN addgroup -S app && adduser -S -G app app
 
+# Каталог для SQLite: том /data монтируется в compose.
+# Права даём пользователю app — иначе non-root запись в том упадёт.
+RUN mkdir -p /data && chown app:app /data
+
 COPY --from=build /out/app /usr/local/bin/app
 
 USER app

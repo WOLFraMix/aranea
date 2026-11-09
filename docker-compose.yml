@@ -49,7 +49,61 @@ services:
     volumes:
       - redisinsight-data:/data
 
+  api:
+    build:
+      context: .
+      args:
+        SERVICE: api
+    environment:
+      KAFKA_ADDR: redpanda:9092
+      REDIS_ADDR: redis:6379
+      DB_PATH: /data/aranea.db
+      MAX_DEPTH: "3"
+    ports:
+      - "8080:8080"
+    volumes:
+      - app-data:/data
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  fetcher:
+    build:
+      context: .
+      args:
+        SERVICE: fetcher
+    environment:
+      KAFKA_ADDR: redpanda:9092
+      REDIS_ADDR: redis:6379
+      MAX_DEPTH: "3"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  indexer:
+    build:
+      context: .
+      args:
+        SERVICE: indexer
+    environment:
+      KAFKA_ADDR: redpanda:9092
+      REDIS_ADDR: redis:6379
+      DB_PATH: /data/aranea.db
+      MAX_DEPTH: "3"
+    volumes:
+      - app-data:/data
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   redpanda-data:
   redis-data:
   redisinsight-data:
+  app-data:

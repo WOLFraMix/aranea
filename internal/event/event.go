@@ -28,6 +28,7 @@ type PageResult struct {
 	StatusCode int      `json:"status_code"`
 	LatencyMs  int64    `json:"latency_ms"`
 	Title      string   `json:"title,omitempty"`
+	Text       string   `json:"text,omitempty"`
 	Error      string   `json:"error,omitempty"`
 	Links      []string `json:"links,omitempty"`     // все href со страницы, до нормализации
 	MaxDepth   *int     `json:"max_depth,omitempty"` // лимит ЭТОГО краула

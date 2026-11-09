@@ -147,10 +147,24 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "q is required")
 		return
 	}
-	q = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(q)
+	// Каждый токен — в кавычки: у FTS5 есть свои операторы (AND, OR, NEAR,
+	// скобки, кавычки), и пользовательский ввод не должен их активировать.
+	parts := strings.Fields(q)
+	if len(parts) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"query": q, "hits": []any{}})
+		return
+	}
+	for i, p := range parts {
+		parts[i] = `"` + strings.ReplaceAll(p, `"`, `""`) + `"`
+	}
+
 	rows, err := s.db.Query(
-		`SELECT crawl_id, url, COALESCE(title, '')
-		 FROM pages WHERE title LIKE '%' || ? || '%' ESCAPE '\' ORDER BY rowid DESC LIMIT 50`, q)
+		`SELECT p.crawl_id, p.url, COALESCE(p.title, '')
+		 FROM pages_fts
+		 JOIN pages p ON p.id = pages_fts.rowid
+		 WHERE pages_fts MATCH ?
+		 ORDER BY bm25(pages_fts)
+		 LIMIT 50`, strings.Join(parts, " "))
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "db: "+err.Error())
 		return

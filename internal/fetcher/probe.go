@@ -69,6 +69,7 @@ func (pr *Probe) Fetch(ctx context.Context, t event.Task) event.PageResult {
 	}
 
 	res.Title = extractTitle(bytes.NewReader(body))
+	res.Text = extractDescription(bytes.NewReader(body))
 	res.Links = extractLinks(base, bytes.NewReader(body))
 	return res
 }
@@ -145,6 +146,43 @@ func extractTitle(body io.Reader) string {
 			if string(name) == "title" {
 				return "" // <title> закрылся пустым
 			}
+		}
+	}
+}
+
+// extractDescription достаёт content атрибут тега
+// <meta name="description" content="..."> — компактное осмысленное
+// описание страницы: на карточках товаров там лежит их текст.
+func extractDescription(body io.Reader) string {
+	tk := html.NewTokenizer(body)
+	for {
+		tt := tk.Next()
+		if tt == html.ErrorToken {
+			return ""
+		}
+		if tt != html.StartTagToken && tt != html.SelfClosingTagToken {
+			continue
+		}
+		name, hasAttr := tk.TagName()
+		if string(name) != "meta" || !hasAttr {
+			continue
+		}
+		var isDesc bool
+		var content string
+		for hasAttr {
+			key, val, more := tk.TagAttr()
+			switch string(key) {
+			case "name":
+				if strings.EqualFold(string(val), "description") {
+					isDesc = true
+				}
+			case "content":
+				content = string(val)
+			}
+			hasAttr = more
+		}
+		if isDesc {
+			return strings.TrimSpace(content)
 		}
 	}
 }

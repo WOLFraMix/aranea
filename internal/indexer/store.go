@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -49,9 +50,37 @@ func NewStore(redisAddr, sqlitePath string) (*Store, error) {
 	);
 	DROP INDEX IF EXISTS idx_pages_url;
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_pages_crawl_url ON pages(crawl_id, url);
+		CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(url, title, text);
+	CREATE TRIGGER IF NOT EXISTS pages_ai AFTER INSERT ON pages BEGIN
+		INSERT INTO pages_fts(rowid, url, title, text)
+		VALUES (new.id, new.url, COALESCE(new.title, ''), COALESCE(new.text, ''));
+	END;
 	`
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("schema: %w", err)
+	}
+	// Миграция: колонка text для полнотекстового поиска.
+	// SQLite не умеет ADD COLUMN IF NOT EXISTS — игнорируем «уже есть».
+	if _, err := db.Exec(`ALTER TABLE pages ADD COLUMN text TEXT`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return nil, fmt.Errorf("migrate text column: %w", err)
+		}
+	}
+	// Пересоздаём FTS, только если индекс старой формы (без колонки text).
+	// Пересоздание включает полный бэкпорт из pages — идемпотентно для свежих строк.
+	var ftsSQL string
+	if err := db.QueryRow(
+		`SELECT COALESCE(sql, '') FROM sqlite_master WHERE name = 'pages_fts'`).Scan(&ftsSQL); err == nil &&
+		!strings.Contains(ftsSQL, "text") {
+		if _, err := db.Exec(`
+			DROP TABLE IF EXISTS pages_fts;
+			CREATE VIRTUAL TABLE pages_fts USING fts5(url, title, text);
+			CREATE TRIGGER IF NOT EXISTS pages_ai AFTER INSERT ON pages BEGIN
+				INSERT INTO pages_fts(rowid, url, title, text)
+				VALUES (new.id, new.url, COALESCE(new.title, ''), COALESCE(new.text, ''));
+			END;`); err != nil {
+			return nil, fmt.Errorf("fts rebuild: %w", err)
+		}
 	}
 	return &Store{rdb: rdb, db: db}, nil
 }
@@ -77,9 +106,9 @@ func (s *Store) Visit(ctx context.Context, crawlID int64, rawURL string) (bool, 
 func (s *Store) Save(ctx context.Context, r event.PageResult) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT OR IGNORE INTO pages
-			(crawl_id, url, title, status_code, latency_ms, depth, error)
+			(crawl_id, url, title, status_code, latency_ms, depth, error, text)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		r.CrawlID, r.URL, r.Title, r.StatusCode, r.LatencyMs, r.Depth, r.Error,
+		r.CrawlID, r.URL, r.Title, r.StatusCode, r.LatencyMs, r.Depth, r.Error, r.Text,
 	)
 	if err != nil {
 		return fmt.Errorf("save page: %w", err)

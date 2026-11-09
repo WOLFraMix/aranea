@@ -70,6 +70,9 @@ func (pr *Probe) Fetch(ctx context.Context, t event.Task) event.PageResult {
 
 	res.Title = extractTitle(bytes.NewReader(body))
 	res.Text = extractDescription(bytes.NewReader(body))
+	if res.Text == "" {
+		res.Text = extractBodyText(bytes.NewReader(body))
+	}
 	res.Links = extractLinks(base, bytes.NewReader(body))
 	return res
 }
@@ -148,6 +151,43 @@ func extractTitle(body io.Reader) string {
 			}
 		}
 	}
+}
+
+// extractBodyText собирает текст всех <p>-абзацев страницы до указанного лимита.
+// Для карточек товаров это описание и метаинформация (автор, цена) —
+// как раз то, что нужно для полнотекстового поиска.
+func extractBodyText(body io.Reader) string {
+	tk := html.NewTokenizer(body)
+	var inP bool
+	var buf []string
+	total := 0
+	for {
+		tt := tk.Next()
+		if tt == html.ErrorToken || total >= 2000 {
+			break // конец потока или набрали достаточно
+		}
+		switch tt {
+		case html.StartTagToken:
+			name, _ := tk.TagName()
+			if string(name) == "p" {
+				inP = true
+			}
+		case html.TextToken:
+			if inP {
+				s := strings.TrimSpace(string(tk.Text()))
+				if s != "" {
+					buf = append(buf, s)
+					total += len(s)
+				}
+			}
+		case html.EndTagToken:
+			name, _ := tk.TagName()
+			if string(name) == "p" {
+				inP = false
+			}
+		}
+	}
+	return strings.Join(buf, " ")
 }
 
 // extractDescription достаёт content атрибут тега

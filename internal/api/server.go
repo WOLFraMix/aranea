@@ -35,6 +35,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/search", s.search)
 	mux.HandleFunc("DELETE /api/crawls/{id}", s.cancelCrawl)
 	mux.HandleFunc("GET /api/crawls", s.listCrawls)
+	mux.HandleFunc("GET /api/debug/page", s.debugPage)
 	return mux
 }
 
@@ -281,4 +282,32 @@ func (s *Server) listCrawls(w http.ResponseWriter, r *http.Request) {
 		out = append(out, c)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"crawls": out})
+}
+
+// debugPage показывает содержимое колонки text конкретной страницы —
+// временный эндпоинт для диагностики конвейера полнотекстового поиска.
+func (s *Server) debugPage(w http.ResponseWriter, r *http.Request) {
+	crawlID, err := strconv.ParseInt(r.URL.Query().Get("crawl_id"), 10, 64)
+	u := r.URL.Query().Get("url")
+	if err != nil || u == "" {
+		httpError(w, http.StatusBadRequest, "crawl_id and url are required")
+		return
+	}
+	var title, text sql.NullString
+	err = s.db.QueryRow(
+		`SELECT COALESCE(title, ''), COALESCE(text, '')
+		 FROM pages WHERE crawl_id = ? AND url = ?`, crawlID, u).
+		Scan(&title, &text)
+	if err == sql.ErrNoRows {
+		httpError(w, http.StatusNotFound, "page not found")
+		return
+	}
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "db: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"crawl_id": crawlID, "url": u,
+		"title": title.String, "text_len": len(text.String), "text": text.String,
+	})
 }

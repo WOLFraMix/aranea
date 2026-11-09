@@ -36,6 +36,7 @@ func NewStore(redisAddr, sqlitePath string) (*Store, error) {
 	// Для нас этого достаточно — записывает только indexer.
 	db.SetMaxOpenConns(1)
 
+	// Схема: таблицы и FTS-индекс. Триггер — после миграции колонки text.
 	schema := `
 	CREATE TABLE IF NOT EXISTS pages (
 		id         INTEGER PRIMARY KEY,
@@ -46,41 +47,43 @@ func NewStore(redisAddr, sqlitePath string) (*Store, error) {
 		latency_ms  INTEGER,
 		depth      INTEGER,
 		error      TEXT,
+		text       TEXT,
 		fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	DROP INDEX IF EXISTS idx_pages_url;
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_pages_crawl_url ON pages(crawl_id, url);
-		CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(url, title, text);
-	CREATE TRIGGER IF NOT EXISTS pages_ai AFTER INSERT ON pages BEGIN
-		INSERT INTO pages_fts(rowid, url, title, text)
-		VALUES (new.id, new.url, COALESCE(new.title, ''), COALESCE(new.text, ''));
-	END;
+	CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(url, title, text);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("schema: %w", err)
 	}
-	// Миграция: колонка text для полнотекстового поиска.
-	// SQLite не умеет ADD COLUMN IF NOT EXISTS — игнорируем «уже есть».
+	// Миграция для баз, созданных до появления text: SQLite не умеет
+	// ADD COLUMN IF NOT EXISTS — игнорируем «уже есть».
 	if _, err := db.Exec(`ALTER TABLE pages ADD COLUMN text TEXT`); err != nil {
 		if !strings.Contains(err.Error(), "duplicate column name") {
 			return nil, fmt.Errorf("migrate text column: %w", err)
 		}
 	}
-	// Пересоздаём FTS, только если индекс старой формы (без колонки text).
-	// Пересоздание включает полный бэкпорт из pages — идемпотентно для свежих строк.
-	var ftsSQL string
-	if err := db.QueryRow(
-		`SELECT COALESCE(sql, '') FROM sqlite_master WHERE name = 'pages_fts'`).Scan(&ftsSQL); err == nil &&
-		!strings.Contains(ftsSQL, "text") {
-		if _, err := db.Exec(`
-			DROP TABLE IF EXISTS pages_fts;
-			CREATE VIRTUAL TABLE pages_fts USING fts5(url, title, text);
-			CREATE TRIGGER IF NOT EXISTS pages_ai AFTER INSERT ON pages BEGIN
-				INSERT INTO pages_fts(rowid, url, title, text)
-				VALUES (new.id, new.url, COALESCE(new.title, ''), COALESCE(new.text, ''));
-			END;`); err != nil {
-			return nil, fmt.Errorf("fts rebuild: %w", err)
-		}
+	// Триггер пересоздаём безусловно при каждом старте: колонка text
+	// к этому моменту гарантированно существует.
+	if _, err := db.Exec(`
+		DROP TRIGGER IF EXISTS pages_ai;
+		CREATE TRIGGER pages_ai AFTER INSERT ON pages BEGIN
+			INSERT INTO pages_fts(rowid, url, title, text)
+			VALUES (new.id, new.url, COALESCE(new.title, ''), COALESCE(new.text, ''));
+		END;`); err != nil {
+		return nil, fmt.Errorf("fts trigger: %w", err)
+	}
+	// Ресинхронизация FTS при каждом старте: индекс всегда точная копия
+	// pages. Недорого при наших объёмах и лечит любые расхождения —
+	// включая строки, проиндексированные старым триггером без text.
+	if _, err := db.Exec(`DELETE FROM pages_fts`); err != nil {
+		return nil, fmt.Errorf("fts wipe: %w", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO pages_fts(rowid, url, title, text)
+		SELECT id, url, COALESCE(title, ''), COALESCE(text, '') FROM pages`); err != nil {
+		return nil, fmt.Errorf("fts resync: %w", err)
 	}
 	return &Store{rdb: rdb, db: db}, nil
 }
@@ -107,7 +110,7 @@ func (s *Store) Save(ctx context.Context, r event.PageResult) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT OR IGNORE INTO pages
 			(crawl_id, url, title, status_code, latency_ms, depth, error, text)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.CrawlID, r.URL, r.Title, r.StatusCode, r.LatencyMs, r.Depth, r.Error, r.Text,
 	)
 	if err != nil {

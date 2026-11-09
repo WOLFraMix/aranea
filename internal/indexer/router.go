@@ -149,7 +149,7 @@ func (rt *Router) toDLQ(ctx context.Context, topic string, payload []byte, attem
 		Error:    cause.Error(),
 		Attempts: attempts,
 		Time:     time.Now().Format(time.RFC3339),
-		Payload:  payload,
+		Payload:  string(payload),
 	}
 	if err := rt.producer.Publish(ctx, event.TopicDLQ, msg); err != nil {
 		log.Printf("dlq publish (оригинал потерян): %v", err)

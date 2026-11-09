@@ -40,7 +40,7 @@ func (c *Consumer) toDLQ(ctx context.Context, payload []byte, cause error) {
 		Error:    cause.Error(),
 		Attempts: 1,
 		Time:     time.Now().Format(time.RFC3339),
-		Payload:  payload,
+		Payload:  string(payload),
 	}
 	val, err := json.Marshal(msg)
 	if err != nil {

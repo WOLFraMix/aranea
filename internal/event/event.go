@@ -2,7 +2,6 @@
 package event
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -54,9 +53,11 @@ const TopicDLQ = "aranea.dlq"
 // DLQMessage — конверт мёртвого письма: оригинальное событие целиком,
 // причина отказа и число попыток. Достаточно для разбора и переигрывания.
 type DLQMessage struct {
-	Topic    string          `json:"topic"`
-	Error    string          `json:"error"`
-	Attempts int             `json:"attempts"`
-	Time     string          `json:"time"`
-	Payload  json.RawMessage `json:"payload"`
+	Topic    string `json:"topic"`
+	Error    string `json:"error"`
+	Attempts int    `json:"attempts"`
+	Time     string `json:"time"`
+	// Payload — оригинальное событие КАК СТРОКА: ядовитое письмо может
+	// быть невалидным JSON, а конверт обязан всегда маршалиться.
+	Payload string `json:"payload"`
 }

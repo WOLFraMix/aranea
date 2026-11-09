@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -100,6 +101,11 @@ func (s *Store) Visit(ctx context.Context, crawlID int64, rawURL string) (bool, 
 	n, err := s.rdb.SAdd(ctx, seenKey(crawlID), rawURL).Result()
 	if err != nil {
 		return false, fmt.Errorf("sadd: %w", err)
+	}
+	// TTL обновляется каждым SAdd: SET умирает через сутки после
+	// последнего добавления — то есть после завершения краула.
+	if err := s.rdb.Expire(ctx, seenKey(crawlID), event.SeenTTL).Err(); err != nil {
+		log.Printf("seen ttl %d: %v", crawlID, err) // не роняем обход — worst case SET без TTL
 	}
 	return n == 1, nil
 }

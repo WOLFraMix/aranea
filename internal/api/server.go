@@ -88,6 +88,8 @@ func (s *Server) startCrawl(w http.ResponseWriter, r *http.Request) {
 		log.Printf("dedup seed %s: %v", t.URL, err) // не роняем запрос — SET пересоберётся из событий
 	}
 
+	s.rdb.Expire(r.Context(), fmt.Sprintf("aranea:seen:%d", id), event.SeenTTL)
+
 	if err := s.rdb.Incr(r.Context(), fmt.Sprintf("aranea:published:%d", id)).Err(); err != nil {
 		log.Printf("publish counter: %v", err)
 	}

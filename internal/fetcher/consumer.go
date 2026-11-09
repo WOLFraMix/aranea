@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 
@@ -30,16 +31,37 @@ func NewConsumer(addr string) (*Consumer, error) {
 	return &Consumer{cl: cl}, nil
 }
 
+// toDLQ отправляет «мёртвое письмо» в aranea.dlq. Битый JSON ретраить
+// бессмысленно — он не починится сам. Если и DLQ-публикация не удалась,
+// логируем потерю: поток обработки не должен застревать на ядовитом письме.
+func (c *Consumer) toDLQ(ctx context.Context, payload []byte, cause error) {
+	msg := event.DLQMessage{
+		Topic:    event.TopicTasks,
+		Error:    cause.Error(),
+		Attempts: 1,
+		Time:     time.Now().Format(time.RFC3339),
+		Payload:  payload,
+	}
+	val, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("dlq marshal: %v", err)
+		return
+	}
+	c.cl.Produce(ctx, &kgo.Record{Topic: event.TopicDLQ, Value: val},
+		func(_ *kgo.Record, err error) {
+			if err != nil {
+				log.Printf("dlq produce (оригинал потерян): %v", err)
+				return
+			}
+			log.Printf("dlq: poison record отправлен в %s: %v", event.TopicTasks, cause)
+		})
+}
+
 // ConsumeTasks перекладывает задачи из Kafka в канал пула.
 // Блокируется до отмены ctx; закрываемый канал done позволяет main
 // дождаться завершения — та самая «подшивка горутины» из разбора main.go.
 func (c *Consumer) ConsumeTasks(ctx context.Context, tasks chan<- event.Task) (chan struct{}, error) {
 	done := make(chan struct{})
-
-	// Блокировка на старте: если брокер ещё не готов (compose греется),
-	// PollRecords будет молча возвращать пусто — это не страшно, цикл
-	// просто крутится. Но группу надо зарегистрировать заранее, поэтому
-	// здесь ничего дополнительно не ждём.
 
 	go func() {
 		defer close(done)
@@ -63,9 +85,9 @@ func (c *Consumer) ConsumeTasks(ctx context.Context, tasks chan<- event.Task) (c
 			fetches.EachRecord(func(r *kgo.Record) {
 				var t event.Task
 				if err := json.Unmarshal(r.Value, &t); err != nil {
-					// Битое сообщение не останавливает весь поток:
-					// логируем и забываем. В фазе 3 обсудим dead-letter.
-					log.Printf("consume: bad task record: %v", err)
+					// Ядовитое письмо — в DLQ, оффсет всё равно закоммитится
+					// вместе с батчем: поток продолжается.
+					c.toDLQ(ctx, r.Value, err)
 					return
 				}
 				select {

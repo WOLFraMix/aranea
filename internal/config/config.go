@@ -16,7 +16,6 @@ type Config struct {
 	SQLitePath   string        // файл базы: "aranea.db"
 	Workers      int           // fetcher: размер пула воркеров
 	MaxDepth     int           // ограничение глубины обхода по умолчанию
-	MaxPerDomain int           // максимум страниц на один домен в обходе
 	RatePerSec   int           // вежливость: запросов в секунду на домен
 	ProbeTimeout time.Duration // таймаут одного HTTP GET
 }
@@ -30,7 +29,6 @@ func New() Config {
 		SQLitePath:   getEnv("DB_PATH", "aranea.db"),
 		Workers:      getInt("WORKERS", 16),
 		MaxDepth:     getInt("MAX_DEPTH", 3),
-		MaxPerDomain: getInt("MAX_PER_DOMAIN", 200),
 		RatePerSec:   getInt("RATE_PER_SEC", 2),
 		ProbeTimeout: getDuration("PROBE_TIMEOUT", 10*time.Second),
 	}

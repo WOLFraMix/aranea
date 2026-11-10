@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -63,14 +64,16 @@ func (s *Server) startCrawl(w http.ResponseWriter, r *http.Request) {
 	// не «отменяет» — два одновременных старта гарантированно разойдутся.
 	id, err := s.rdb.Incr(r.Context(), "aranea:crawl_seq").Result()
 	if err != nil {
-		httpError(w, http.StatusBadGateway, "redis: "+err.Error())
+		log.Printf("start crawl: redis incr: %v", err)
+		httpError(w, http.StatusBadGateway, "internal error")
 		return
 	}
 
 	if _, err := s.db.ExecContext(r.Context(),
 		`INSERT INTO crawls (id, url, depth) VALUES (?, ?, ?)`,
 		id, u.String(), req.Depth); err != nil {
-		httpError(w, http.StatusInternalServerError, "db: "+err.Error())
+		log.Printf("start crawl %d: db insert: %v", id, err)
+		httpError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -78,7 +81,8 @@ func (s *Server) startCrawl(w http.ResponseWriter, r *http.Request) {
 	// а не глобальным MAX_DEPTH из конфига.
 	t := event.Task{CrawlID: id, URL: u.String(), Depth: 0, MaxDepth: &req.Depth}
 	if err := s.prod.Publish(r.Context(), event.TopicTasks, t); err != nil {
-		httpError(w, http.StatusBadGateway, "publish: "+err.Error())
+		log.Printf("start crawl %d: publish: %v", id, err)
+		httpError(w, http.StatusBadGateway, "internal error")
 		return
 	}
 
@@ -88,12 +92,16 @@ func (s *Server) startCrawl(w http.ResponseWriter, r *http.Request) {
 		log.Printf("dedup seed %s: %v", t.URL, err) // не роняем запрос — SET пересоберётся из событий
 	}
 
-	s.rdb.Expire(r.Context(), fmt.Sprintf("aranea:seen:%d", id), event.SeenTTL)
+	if err := s.rdb.Expire(r.Context(), fmt.Sprintf("aranea:seen:%d", id), event.SeenTTL).Err(); err != nil {
+		log.Printf("expire seen %d: %v", id, err) // worst case — SET без TTL, пересоберётся
+	}
 
 	if err := s.rdb.Incr(r.Context(), fmt.Sprintf("aranea:published:%d", id)).Err(); err != nil {
 		log.Printf("publish counter: %v", err)
 	}
-	s.rdb.Expire(r.Context(), fmt.Sprintf("aranea:published:%d", id), 24*time.Hour)
+	if err := s.rdb.Expire(r.Context(), fmt.Sprintf("aranea:published:%d", id), 24*time.Hour).Err(); err != nil {
+		log.Printf("expire published %d: %v", id, err)
+	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"crawl_id": id,
@@ -109,14 +117,18 @@ func (s *Server) crawlPages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit := clampInt(r.URL.Query().Get("limit"), 1, 100, 20)
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	offset, err := strconv.Atoi(r.URL.Query().Get("offset"))
+	if err != nil {
+		offset = 0 // 400 не нужен — 0 это безопасный дефолт
+	}
 
-	rows, err := s.db.Query(
+	rows, err := s.db.QueryContext(r.Context(),
 		`SELECT url, status_code, latency_ms, COALESCE(title, ''), COALESCE(depth, 0)
 		 FROM pages WHERE crawl_id = ? ORDER BY rowid LIMIT ? OFFSET ?`,
 		id, limit, offset)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "db: "+err.Error())
+		log.Printf("crawl pages %d: db: %v", id, err)
+		httpError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	defer rows.Close()
@@ -138,7 +150,8 @@ func (s *Server) crawlPages(w http.ResponseWriter, r *http.Request) {
 		pages = append(pages, p)
 	}
 	if err := rows.Err(); err != nil {
-		httpError(w, http.StatusInternalServerError, "rows: "+err.Error())
+		log.Printf("crawl pages %d: rows: %v", id, err)
+		httpError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"crawl_id": id, "pages": pages})
@@ -161,7 +174,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		parts[i] = `"` + strings.ReplaceAll(p, `"`, `""`) + `"`
 	}
 
-	rows, err := s.db.Query(
+	rows, err := s.db.QueryContext(r.Context(),
 		`SELECT p.crawl_id, p.url, COALESCE(p.title, '')
 		 FROM pages_fts
 		 JOIN pages p ON p.id = pages_fts.rowid
@@ -169,7 +182,8 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		 ORDER BY bm25(pages_fts)
 		 LIMIT 50`, strings.Join(parts, " "))
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "db: "+err.Error())
+		log.Printf("search: db: %v", err)
+		httpError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	defer rows.Close()
@@ -189,7 +203,8 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		hits = append(hits, h)
 	}
 	if err := rows.Err(); err != nil {
-		httpError(w, http.StatusInternalServerError, "rows: "+err.Error())
+		log.Printf("search: rows: %v", err)
+		httpError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"query": q, "hits": hits})
@@ -200,7 +215,9 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Printf("write json: %v", err) // ответ уже начат — можно только зафиксировать
+	}
 }
 
 func httpError(w http.ResponseWriter, code int, msg string) {
@@ -230,25 +247,30 @@ func (s *Server) cancelCrawl(w http.ResponseWriter, r *http.Request) {
 	// SETNX: повторный DELETE не продлевает и не путает статус.
 	ok, err := s.rdb.SetNX(r.Context(), event.CancelKey(id), 1, 24*time.Hour).Result()
 	if err != nil {
-		httpError(w, http.StatusBadGateway, "redis: "+err.Error())
+		log.Printf("cancel crawl %d: redis setnx: %v", id, err)
+		httpError(w, http.StatusBadGateway, "internal error")
 		return
 	}
 	status := "cancelled"
 	if !ok {
 		status = "already cancelling"
 	}
-	if _, err := s.db.Exec(`UPDATE crawls SET status = 'cancelled' WHERE id = ?`, id); err != nil {
-		log.Printf("cancel status update: %v", err)
+	if _, err := s.db.ExecContext(r.Context(),
+		`UPDATE crawls SET status = 'cancelled' WHERE id = ?`, id); err != nil {
+		log.Printf("cancel crawl %d: db: %v", id, err)
+		httpError(w, http.StatusInternalServerError, "internal error")
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"crawl_id": id, "status": status})
 }
 
 func (s *Server) listCrawls(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.Query(
+	rows, err := s.db.QueryContext(r.Context(),
 		`SELECT id, url, depth, status, COALESCE(created_at, '')
 		 FROM crawls ORDER BY id DESC LIMIT 50`)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "db: "+err.Error())
+		log.Printf("list crawls: db: %v", err)
+		httpError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	defer rows.Close()
@@ -267,27 +289,50 @@ func (s *Server) listCrawls(w http.ResponseWriter, r *http.Request) {
 			log.Printf("scan crawl: %v", err)
 			continue
 		}
-		// Живой статус поверх записанного: отмена важнее всего,
-		// затем сверка счётчиков задач.
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("list crawls: rows: %v", err)
+		httpError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	// Живой статус поверх записанного: отмена важнее всего, затем сверка
+	// счётчиков задач. Один pipeline вместо трёх запросов на краул (N+1).
+	pipe := s.rdb.Pipeline()
+	cancelCmds := make([]*redis.IntCmd, len(out))
+	pubCmds := make([]*redis.StringCmd, len(out))
+	procCmds := make([]*redis.StringCmd, len(out))
+	for i := range out {
+		cancelCmds[i] = pipe.Exists(r.Context(), event.CancelKey(out[i].ID))
+		pubCmds[i] = pipe.Get(r.Context(), fmt.Sprintf("aranea:published:%d", out[i].ID))
+		procCmds[i] = pipe.Get(r.Context(), fmt.Sprintf("aranea:processed:%d", out[i].ID))
+	}
+	// redis.Nil здесь — отсутствие ключей счётчиков, это норма.
+	if _, err := pipe.Exec(r.Context()); err != nil && !errors.Is(err, redis.Nil) {
+		log.Printf("list crawls: redis pipeline: %v", err) // статусы останутся как в БД
+	}
+	for i := range out {
 		switch {
-		case s.rdb.Exists(r.Context(), event.CancelKey(c.ID)).Val() > 0:
-			c.Status = "cancelled"
+		case cancelCmds[i].Val() > 0:
+			out[i].Status = "cancelled"
 		default:
-			pub, _ := s.rdb.Get(r.Context(), fmt.Sprintf("aranea:published:%d", c.ID)).Int()
-			proc, _ := s.rdb.Get(r.Context(), fmt.Sprintf("aranea:processed:%d", c.ID)).Int()
+			pub, _ := pubCmds[i].Int() // 0 при отсутствии ключа или ошибке
+			proc, _ := procCmds[i].Int()
 			if pub > 0 && proc >= pub {
-				c.Status = "finished"
-			} else if c.Status == "" {
-				c.Status = "running"
+				out[i].Status = "finished"
+			} else if out[i].Status == "" {
+				out[i].Status = "running"
 			}
 		}
-		out = append(out, c)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"crawls": out})
 }
 
 // debugPage показывает содержимое колонки text конкретной страницы —
 // временный эндпоинт для диагностики конвейера полнотекстового поиска.
+// Без авторизации: держать только во внутреннем контуре,
+// перед публичным экспонированием закрыть middleware'ом.
 func (s *Server) debugPage(w http.ResponseWriter, r *http.Request) {
 	crawlID, err := strconv.ParseInt(r.URL.Query().Get("crawl_id"), 10, 64)
 	u := r.URL.Query().Get("url")
@@ -296,16 +341,17 @@ func (s *Server) debugPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var title, text sql.NullString
-	err = s.db.QueryRow(
+	err = s.db.QueryRowContext(r.Context(),
 		`SELECT COALESCE(title, ''), COALESCE(text, '')
 		 FROM pages WHERE crawl_id = ? AND url = ?`, crawlID, u).
 		Scan(&title, &text)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		httpError(w, http.StatusNotFound, "page not found")
 		return
 	}
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "db: "+err.Error())
+		log.Printf("debug page: db: %v", err)
+		httpError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

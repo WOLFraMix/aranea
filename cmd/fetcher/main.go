@@ -4,7 +4,6 @@ package main
 import (
 	"context"
 	"log"
-	"os"
 	"os/signal"
 	"syscall"
 
@@ -12,13 +11,6 @@ import (
 	"github.com/WOLFraMix/aranea/internal/fetcher"
 	"github.com/redis/go-redis/v9"
 )
-
-func env(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -32,7 +24,7 @@ func main() {
 	}
 	defer prod.Close()
 
-	rdb := redis.NewClient(&redis.Options{Addr: env("REDIS_ADDR", "127.0.0.1:6379")})
+	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
 
 	consumer, err := fetcher.NewConsumer(cfg.KafkaAddr)
 	if err != nil {
@@ -42,9 +34,9 @@ func main() {
 
 	pool := fetcher.New(cfg,
 		fetcher.NewProbe(cfg.ProbeTimeout),
-		fetcher.NewDomainLimits(cfg.RatePerSec),
+		fetcher.NewDomainLimits(ctx, cfg.RatePerSec),
 		prod,
-		fetcher.NewRobots(cfg.ProbeTimeout),
+		fetcher.NewRobots(ctx, cfg.ProbeTimeout),
 		rdb,
 	)
 

@@ -144,13 +144,7 @@ func (rt *Router) saveWithRetry(ctx context.Context, res event.PageResult, raw [
 
 // toDLQ публикует «мёртвое письмо» — оригинальное событие с причиной.
 func (rt *Router) toDLQ(ctx context.Context, topic string, payload []byte, attempts int, cause error) {
-	msg := event.DLQMessage{
-		Topic:    topic,
-		Error:    cause.Error(),
-		Attempts: attempts,
-		Time:     time.Now().Format(time.RFC3339),
-		Payload:  string(payload),
-	}
+	msg := event.NewDLQMessage(topic, payload, attempts, cause)
 	if err := rt.producer.Publish(ctx, event.TopicDLQ, msg); err != nil {
 		log.Printf("dlq publish (оригинал потерян): %v", err)
 		return

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -30,31 +31,53 @@ type Robots struct {
 	rules  map[string]*ruleSet
 	ttl    time.Duration
 	ua     string // база юзер-агента без версии: "aranea"
+	stop   chan struct{}
 }
 
-func NewRobots(timeout time.Duration) *Robots {
+func NewRobots(ctx context.Context, timeout time.Duration) *Robots {
 	r := &Robots{
-		client: &http.Client{Timeout: timeout},
-		rules:  make(map[string]*ruleSet),
-		ttl:    time.Hour,
-		ua:     "aranea",
+		client: &http.Client{
+			Timeout:   timeout,
+			Transport: &http.Transport{DialContext: restrictedDialer(timeout)},
+		},
+		rules: make(map[string]*ruleSet),
+		ttl:   time.Hour,
+		ua:    "aranea",
+		stop:  make(chan struct{}),
 	}
-	go r.janitor()
+	go r.janitor(ctx)
 	return r
 }
 
 // janitor раз в 10 минут выселяет остывшие записи: карта не растёт бесконечно.
-// Живёт столько же, сколько процесс, — отдельного shutdown не требует.
-func (r *Robots) janitor() {
+func (r *Robots) janitor(ctx context.Context) {
 	t := time.NewTicker(10 * time.Minute)
-	for range t.C {
-		r.mu.Lock()
-		for host, rs := range r.rules {
-			if time.Since(rs.loadedAt) > r.ttl {
-				delete(r.rules, host)
+	defer t.Stop()
+	for {
+		select {
+		case <-r.stop:
+			return
+		case <-t.C:
+			r.mu.Lock()
+			for host, rs := range r.rules {
+				if time.Since(rs.loadedAt) > r.ttl {
+					delete(r.rules, host)
+				}
 			}
+			r.mu.Unlock()
+		case <-ctx.Done():
+			return
 		}
-		r.mu.Unlock()
+	}
+}
+
+// Close останавливает janitor-горутину.
+func (r *Robots) Close() {
+	select {
+	case <-r.stop:
+		// already closed
+	default:
+		close(r.stop)
 	}
 }
 
@@ -109,7 +132,8 @@ func (r *Robots) load(ctx context.Context, host string) *ruleSet {
 		if resp, err := r.client.Do(req); err == nil {
 			defer resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				loaded = parseRobots(resp.Body, r.ua)
+				// Лимит чтения: сервер не должен иметь возможности залить гигабайт.
+				loaded = parseRobots(io.LimitReader(resp.Body, 512<<10), r.ua)
 			}
 		}
 	}
@@ -161,13 +185,18 @@ func parseRobots(body io.Reader, ua string) *ruleSet {
 			cur.rules = append(cur.rules, rule{prefix: val, allow: key == "allow"})
 		}
 	}
+	if err := sc.Err(); err != nil {
+		log.Printf("robots scan: %v", err) // файл усечён — правило могло потеряться
+	}
 
 	// Выбор группы: длиннейший совпавший агент. «aranea» матчится и с
 	// секцией «aranea/1.0», и наоборот — сравнение в обе стороны.
 	best, bestLen := -1, -1
 	for i, g := range groups {
 		for _, a := range g.agents {
-			if strings.HasPrefix(a, ua) || strings.HasPrefix(ua, a) && len(a) > bestLen {
+			// Скобки обязательны: && связывает крепче ||, и без них
+			// условие длины применялось бы только к одной ветке.
+			if (strings.HasPrefix(a, ua) || strings.HasPrefix(ua, a)) && len(a) > bestLen {
 				best, bestLen = i, len(a)
 			}
 		}

@@ -61,3 +61,15 @@ type DLQMessage struct {
 	// быть невалидным JSON, а конверт обязан всегда маршалиться.
 	Payload string `json:"payload"`
 }
+
+// NewDLQMessage собирает конверт мёртвого письма — общая логика
+// для consumer'а fetcher'а и router'а indexer'а.
+func NewDLQMessage(topic string, payload []byte, attempts int, cause error) DLQMessage {
+	return DLQMessage{
+		Topic:    topic,
+		Error:    cause.Error(),
+		Attempts: attempts,
+		Time:     time.Now().Format(time.RFC3339),
+		Payload:  string(payload),
+	}
+}

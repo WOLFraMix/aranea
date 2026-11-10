@@ -125,8 +125,7 @@ func (p *Pool) workerLoop(ctx context.Context, id int) {
 			case <-ctx.Done():
 				return
 			}
-			log.Printf("worker: %s links=%d", res.URL, len(res.Links))
-			log.Printf("worker: published page %s", t.URL)
+			log.Printf("worker: published page %s links=%d", res.URL, len(res.Links))
 		}
 	}
 }

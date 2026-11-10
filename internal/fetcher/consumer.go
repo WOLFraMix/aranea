@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"log"
-	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 
@@ -22,8 +21,7 @@ func NewConsumer(addr string) (*Consumer, error) {
 		kgo.SeedBrokers(addr),
 		kgo.ConsumerGroup("aranea-fetchers"),
 		kgo.ConsumeTopics(event.TopicTasks),
-		// Офсеты коммитим после обработки (at-least-once): рестарт
-		// дообслуживает недообработанное, а не переигрывает всю историю.
+		kgo.DisableAutoCommit(), // иначе franz-go коммитит ОПРОШЕННЫЕ записи раз в 5с
 	)
 	if err != nil {
 		return nil, err
@@ -35,13 +33,7 @@ func NewConsumer(addr string) (*Consumer, error) {
 // бессмысленно — он не починится сам. Если и DLQ-публикация не удалась,
 // логируем потерю: поток обработки не должен застревать на ядовитом письме.
 func (c *Consumer) toDLQ(ctx context.Context, payload []byte, cause error) {
-	msg := event.DLQMessage{
-		Topic:    event.TopicTasks,
-		Error:    cause.Error(),
-		Attempts: 1,
-		Time:     time.Now().Format(time.RFC3339),
-		Payload:  string(payload),
-	}
+	msg := event.NewDLQMessage(event.TopicTasks, payload, 1, cause)
 	val, err := json.Marshal(msg)
 	if err != nil {
 		log.Printf("dlq marshal: %v", err)
@@ -100,6 +92,12 @@ func (c *Consumer) ConsumeTasks(ctx context.Context, tasks chan<- event.Task) (c
 				}
 				log.Printf("consume: got task %s", t.URL)
 			})
+
+			// Коммит после передачи всего батча в пул: рестарт дообслужит
+			// недообработанное (at-least-once; дубликаты для краула безвредны).
+			if err := c.cl.CommitRecords(ctx, fetches.Records()...); err != nil {
+				log.Printf("commit tasks: %v", err)
+			}
 		}
 	}()
 

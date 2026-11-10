@@ -3,7 +3,9 @@ package fetcher
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -19,9 +21,63 @@ type Probe struct {
 	client *http.Client
 }
 
-// NewProbe — клиент с жёстким таймаутом из конфига.
+// NewProbe — клиент с жёстким таймаутом из конфига и защитой от SSRF.
 func NewProbe(timeout time.Duration) *Probe {
-	return &Probe{client: &http.Client{Timeout: timeout}}
+	// Кастомный Transport без Proxy: запросы не идут через системный
+	// прокси, что заодно сужает SSRF-поверхность.
+	return &Probe{client: &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			DialContext: restrictedDialer(timeout),
+		},
+	}}
+}
+
+// restrictedDialer возвращает DialContext, который блокирует подключения
+// к приватным и локальным адресам (loopback, link-local, RFC1918, Docker/MetaDNS).
+// Защищает от SSRF, когда пользовательский URL попадает в краулер.
+func restrictedDialer(timeout time.Duration) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		if isPrivateIP(host) {
+			return nil, fmt.Errorf("SSRF blocked: %s is a private IP", host)
+		}
+		// Не IP-адрес — резолвим и проверяем. DefaultResolver.LookupHost
+		// принимает ctx: при отмене запроса горутина не виснет в DNS.
+		addrs, err := net.DefaultResolver.LookupHost(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		for _, a := range addrs {
+			if isPrivateIP(a) {
+				return nil, fmt.Errorf("SSRF blocked: %s resolves to private IP", host)
+			}
+		}
+		d := &net.Dialer{Timeout: timeout}
+		return d.DialContext(ctx, network, addr)
+	}
+}
+
+// isPrivateIP возвращает true, если адрес попадает в приватные диапазоны.
+func isPrivateIP(s string) bool {
+	ip := net.ParseIP(s)
+	if ip == nil {
+		return false
+	}
+	// IsPrivate покрывает RFC1918 и IPv6 ULA (fc00::/7), IsUnspecified —
+	// 0.0.0.0/::. CGNAT 100.64/10 IsPrivate не считает приватным,
+	// но для SSRF-защиты его блокируем отдельной проверкой.
+	if ip.IsPrivate() || ip.IsUnspecified() ||
+		ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return true
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4[0] == 100 && v4[1] >= 64 && v4[1] < 128 // 100.64.0.0/10
+	}
+	return false
 }
 
 // Fetch скачивает страницу и возвращает результат пробы.

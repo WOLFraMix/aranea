@@ -5,37 +5,35 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
-	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
 	_ "modernc.org/sqlite"
 
 	"github.com/WOLFraMix/aranea/internal/api"
+	"github.com/WOLFraMix/aranea/internal/config"
 	"github.com/WOLFraMix/aranea/internal/fetcher"
 	"github.com/redis/go-redis/v9"
 )
 
-func env(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
 func main() {
-	kafkaAddr := env("KAFKA_ADDR", "127.0.0.1:9093")
-	redisAddr := env("REDIS_ADDR", "127.0.0.1:6379")
-	dbPath := env("DB_PATH", "aranea.db")
-	maxDepth, _ := strconv.Atoi(env("MAX_DEPTH", "3"))
+	cfg := config.New()
 
-	rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
+	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
 
-	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+	db, err := sql.Open("sqlite",
+		cfg.SQLitePath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
 	if err != nil {
 		log.Fatalf("api: open db: %v", err)
+	}
+	// Один коннект, как в indexer'е: читатели в WAL и так конкурентны,
+	// а редкие записи (INSERT краула, UPDATE статуса) защищены busy_timeout.
+	db.SetMaxOpenConns(1)
+	// sql.Open не подключается — реальные ошибки (битый путь, права)
+	// ловим здесь, на старте, а не на первом запросе.
+	if err := db.PingContext(context.Background()); err != nil {
+		log.Fatalf("api: ping db: %v", err)
 	}
 	if _, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS crawls (
@@ -60,25 +58,27 @@ func main() {
 		}
 	}
 
-	prod, err := fetcher.NewProducer(kafkaAddr)
+	prod, err := fetcher.NewProducer(cfg.KafkaAddr)
 	if err != nil {
 		log.Fatalf("api: producer: %v", err)
 	}
 	defer prod.Close()
 
-	srv := api.New(db, prod, rdb, maxDepth)
+	srv := api.New(db, prod, rdb, cfg.MaxDepth)
 
 	httpSrv := &http.Server{
-		Addr:              ":8080",
+		Addr:              cfg.HTTPAddr,
 		Handler:           srv.Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	go func() {
-		log.Printf("api: listening on :8080")
+		log.Printf("api: listening on %s", cfg.HTTPAddr)
 		if err := httpSrv.ListenAndServe(); err != http.ErrServerClosed {
 			log.Fatalf("api: %v", err)
 		}

@@ -3,9 +3,11 @@ module github.com/WOLFraMix/aranea
 go 1.27.0
 
 require (
+	github.com/redis/go-redis/v9 v9.23.0
 	github.com/twmb/franz-go v1.22.2
 	golang.org/x/net v0.62.0
 	golang.org/x/time v0.16.0
+	modernc.org/sqlite v1.61.1
 )
 
 require (
@@ -16,7 +18,6 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.33 // indirect
-	github.com/redis/go-redis/v9 v9.23.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/twmb/franz-go/pkg/kmsg v1.15.0 // indirect
 	go.uber.org/atomic v1.12.0 // indirect
@@ -24,5 +25,4 @@ require (
 	modernc.org/libc v1.79.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
-	modernc.org/sqlite v1.61.1 // indirect
 )

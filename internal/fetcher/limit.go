@@ -24,30 +24,51 @@ type DomainLimits struct {
 	mu   sync.Mutex
 	lims map[string]*limEntry
 	r    rate.Limit
+	stop chan struct{}
 }
 
 // NewDomainLimits создаёт таблицу лимитов: perSec запросов/сек на домен.
-func NewDomainLimits(perSec int) *DomainLimits {
+// ctx нужен для корректного завершения janitor-горутины при shutdown.
+func NewDomainLimits(ctx context.Context, perSec int) *DomainLimits {
 	d := &DomainLimits{
 		lims: make(map[string]*limEntry),
 		r:    rate.Limit(perSec),
+		stop: make(chan struct{}),
 	}
-	go d.janitor()
+	go d.janitor(ctx)
 	return d
 }
 
 // janitor выселяет лимитеры доменов, к которым не обращались дольше часа:
 // тысячи пройденных доменов не должны копиться в памяти вечно.
-func (d *DomainLimits) janitor() {
+func (d *DomainLimits) janitor(ctx context.Context) {
 	t := time.NewTicker(10 * time.Minute)
-	for range t.C {
-		d.mu.Lock()
-		for host, e := range d.lims {
-			if time.Since(e.last) > time.Hour {
-				delete(d.lims, host)
+	defer t.Stop()
+	for {
+		select {
+		case <-d.stop:
+			return
+		case <-t.C:
+			d.mu.Lock()
+			for host, e := range d.lims {
+				if time.Since(e.last) > time.Hour {
+					delete(d.lims, host)
+				}
 			}
+			d.mu.Unlock()
+		case <-ctx.Done():
+			return
 		}
-		d.mu.Unlock()
+	}
+}
+
+// Close останавливает janitor-горутину.
+func (d *DomainLimits) Close() {
+	select {
+	case <-d.stop:
+		// already closed
+	default:
+		close(d.stop)
 	}
 }
 

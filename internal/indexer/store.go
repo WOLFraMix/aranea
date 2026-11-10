@@ -143,7 +143,9 @@ func (s *Store) CountPublished(ctx context.Context, crawlID int64) error {
 	if err := s.rdb.Incr(ctx, key).Err(); err != nil {
 		return fmt.Errorf("incr published: %w", err)
 	}
-	s.rdb.Expire(ctx, key, 24*time.Hour)
+	if err := s.rdb.Expire(ctx, key, 24*time.Hour).Err(); err != nil {
+		log.Printf("expire published %d: %v", crawlID, err)
+	}
 	return nil
 }
 
@@ -153,6 +155,8 @@ func (s *Store) CountProcessed(ctx context.Context, crawlID int64) error {
 	if err := s.rdb.Incr(ctx, key).Err(); err != nil {
 		return fmt.Errorf("incr processed: %w", err)
 	}
-	s.rdb.Expire(ctx, key, 24*time.Hour)
+	if err := s.rdb.Expire(ctx, key, 24*time.Hour).Err(); err != nil {
+		log.Printf("expire processed %d: %v", crawlID, err)
+	}
 	return nil
 }
